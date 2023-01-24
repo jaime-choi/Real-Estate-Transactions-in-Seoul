@@ -1,0 +1,486 @@
+---
+title: "Real Estate Transactions in Seoul"
+output: html_document
+---
+
+### Group 7 (Choi Hae Min, Kim Ji Hyun, Son Sung Mo, Supatach Vanichayangkuranont)
+
+# Introdutction (Reasons for choosing the topic, explaination about data)
+
+Real estate is very important as the necessities of life and an asset. However, there are not enough information about its present price, because it has only few transactions.Therefore, we wanted to give proper information about real estate price through this project.
+
+Our dataset is about all real estate transactions in Seoul, from January 2018 to October 2022. It has 640,000 observations and 21 variables. We took it from Seoul open data and this is its URL.
+
+https://data.seoul.go.kr/dataList/OA-21275/S/1/datasetView.do
+
+
+
+```{r}
+df <- read.csv("(translated) Real Estate Transactions in Seoul.csv", fileEncoding = "euc-kr")
+head(df)
+```
+
+#### Open basic Library
+```{r,message=F,warning=F}
+library(tidyverse)
+library(lubridate)
+library(ggcorrplot)
+```
+
+# Preprocessing
+
+#### Rename the column for intuitive understanding and delete unusable columns  
+```{r}
+names(df)[12] <- "Price.10000.won"
+names(df)[13] <- "Building.Area"
+names(df)[14] <- "Land.Area"
+df <- df[-c(4:10)]
+df <- df[-c(2,9,14)]
+```
+
+
+
+#### Check NA values of data
+```{r}
+colSums(is.na(df))
+```
+There are many NA values in land.area, floor, cancellation date, construction year
+
+#### check number of unique value in each columns
+```{r}
+apply(df,2,n_distinct)
+```
+The number of unique values in the columns is as above.
+
+#### Check unique value in some columns
+```{r}
+
+unique(df$Gu) # (25 distinctions)
+n_distinct(df$Dong) # (420 dong)
+sort(unique(df$floor)) # (floor exists from -3 to 73, and there are also NA values.)
+sort(unique(df$Construction.Year)) #(Construction years exist from 1900 to 2022. 0 seems to be an outlier.)
+
+unique(df$Building.Purpose) # apartment, row house, studio apartment, multi household
+
+unique(df$Transaction) # mediation, direct, ""
+
+sum(is.na(df$Cencellation.Date) == FALSE)
+
+```
+In Gu and Dong column, there are 25 and 420 unique values. We assume that regional information also has a large impact on real estate prices. Therefore, we plan to create a derived variable Gwon that is easy to analyze using the Gu column. 
+
+Floor values exist from -3 to 73, and there are also NA values. A negative number means underground.
+Construction years values exist from 1900 to 2022. 0 seems to be a missing value.
+
+There are apartment, row house, studio apartment, multi household in Building Purpose. "Multi house hold" seems to have some errors in the process of translation. It's more appropriate to say "Single-family home",so we will change it. As a categorical variable, this column will have a great impact on the analysis of real estate values.
+
+There are mediation, direct, "" in Transaction column. "" seems to be a missing value. so we will change it to NA.
+
+If the cancellation date column has a value, the transaction is a canceled transaction and should be excluded from the data. And There are 16908 cancellation dates in the column. so we will exclude that rows.
+
+#### Process the data based on checking the data characterization
+```{r}
+df$Building.Purpose[df$Building.Purpose == "multi household house"] <- "Single-family home"
+
+df$Transaction[df$Transaction == ""] <- NA
+df <- df[is.na(df$Cencellation.Date) == TRUE,] # Except when the transaction is cancelled. Update the data
+```
+
+#### Generate Base Rate column
+
+To create the base rate column, we used data containing information about base rates.
+The base_rate data has the information of the base rate and the year and month to which the interest rate is applied. Here is URL of base rate dataset.
+
+ecos.bok.or.kr/#/Short/89ebfb
+
+To add the standard interest rate information to the real_estate data, the year variable of the existing data was used to create a 'ym' variable with only the year and month, and the two data were combined using 'ym' as a key.
+
+Improvement: Base rate refers to a country's representative interest rate determined by the central bank of each country. All buyers expend the interest costs as an opportunity cost. Therefore, when the base rate rises, interest costs increase, demand for real estate decreases and real estate prices fall. So we expected negative correlation between price and base rate.
+
+```{r}
+base_rate <- read.csv("base rate (18-1-20_22-11-11) month.csv")
+head(base_rate)
+
+base_rate$ym<- my(base_rate$month)
+str(base_rate)
+df$ym <- ymd(df$Contract.Date)
+
+base_rate$ym <- substr(base_rate$ym,1,7)
+df$ym <- substr(df$ym,1,7)
+
+df <- inner_join(df,base_rate,key = 'ym')
+```
+
+
+
+# EDA Through Visualization
+Now we will visualize the data to derive insights.
+Below are the results of visually showing the relationship between various variables using ggplot.
+
+
+### Mean price versus building purpose
+
+```{r}
+df %>% 
+  group_by(Building.Purpose) %>% 
+  summarise(mean_price = mean(Price.10000.won)) %>% 
+  ggplot(aes(x = Building.Purpose, y = mean_price, fill = Building.Purpose, alpha = 0.6))+
+  geom_col()+
+  theme_bw()+
+  coord_flip()+
+  theme(legend.position = 'none')+
+  labs(x='Building purpose',y='Mean Price',title='Mean Price of real estate transactions by building purpose')
+```
+Looking at the above plot, it can be seen that Single-family homes are being traded at the highest price. Given that there is a difference in price depending on the purpose of the building, the building purpose variable can serve as an explanatory variable.
+
+### Average price of real estate transactions by building area
+
+```{r}
+building_area_agg <- df %>% 
+  mutate(B_Area = case_when(
+    Building.Area <= 100 ~ "0-100",
+    Building.Area > 100 & Building.Area <= 200 ~ "100-200",
+    Building.Area > 200 & Building.Area <= 300 ~ "200-300",
+    Building.Area > 300 ~ "300+"
+  ))
+
+building_area_agg$B_Area <- factor(building_area_agg$B_Area, levels=c("0-100", "100-200", "200-300", "300+"), ordered = TRUE)
+building_area_agg %>%
+  group_by(B_Area) %>% 
+  summarise(Price = mean(Price.10000.won) * 100) %>% 
+  ggplot(aes(x = B_Area, y = Price, fill = B_Area))+
+  geom_col(alpha = 0.6)+
+  theme_bw()+
+  labs(x='Building Area',y='Price',title='Average price of real estate transactions by building area') +
+  geom_text(aes(x= B_Area, y= Price, label = paste(round(Price/1000000,1), 'm')), position = position_dodge(width = 1),vjust = -0.5, size = 4,check_overlap = T) +
+  theme(axis.text.x = element_text(vjust = 0.5,size =12))
+```
+Clearly, the plot shows that there is a positive correlation between building area and price.
+
+#### Integration Gu to Gwon
+
+In the regression analysis, we tried to use Gu as a categorical variable. However, too many category labels can be a problem when modeling. Based on the fact that Seoul City integrates 25 Gu into 5 Gwon, we will create Gwon variables. Since there was no clean way, we handled it with 'ifelse' statement.
+```{r}
+df$Gwon <- ifelse((df$Gu == "Jongno") |(df$Gu == "Junggu") | (df$Gu == "Yongsan"), "downtown area",
+                  ifelse((df$Gu =="Gangdong") | (df$Gu == "Eunpyoung") |(df$Gu == "Seodaemun") | (df$Gu == "Mapo"),"northwest area",
+                         ifelse((df$Gu == "Gangbuk") | (df$Gu == "Dobong") |(df$Gu == "Nowon") | (df$Gu == "Seongbuk") | (df$Gu == "Dongdaemun") |  (df$Gu == "Jungnang") | (df$Gu == "Seongdong") | (df$Gu == "Gwangjin"), "northeast area", 
+                                ifelse((df$Gu == "Gangseo") | (df$Gu == "Yangcheon") | (df$Gu == "Youngdeungpo") | (df$Gu == "Guro") | (df$Gu == "Geumcheon") | (df$Gu == "Dongjak") | (df$Gu == "Gwanak"), "southwest area", 
+                                       ifelse((df$GU == "Songpa") |(df$Gu == "Seocho") | (df$Gu == "Gangnam")| (df$Gu == "Seocho") | (df$GU == "Songpa") | (df$Gu == "Gangdong"), "southeast area", "others")))))
+
+df$Gwon[df$Gu == "Seocho"] <- "southeast area"
+df$Gwon[df$Gu == "Gangnam"] <- "southeast area"
+df$Gwon[df$Gu == "Songpa"] <- "southeast area"
+```
+
+
+#### Average Real Estate Price by Gwon
+```{r,warning = F}
+df %>% select(Gwon, Price.10000.won) %>%
+  group_by(Gwon) %>%
+  summarise(mean_price = mean(Price.10000.won)) %>% 
+  arrange(desc(mean_price)) %>% 
+  ggplot(aes(x=Gwon, y=mean_price, fill=Gwon)) +
+  geom_bar(stat="identity") +
+  geom_hline(aes(yintercept = mean(df$Price.10000.won)), linetype= "dashed", size=1)+
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=15, hjust=1)) +
+  labs(title="Average Real Estate Price by Gwon", y="Average Price (10,000 won)")
+  
+```
+Looking at the above plot, you can see that there is a difference in price for each Gwon.
+
+### Mean price of real estate transactions by Month
+```{r,message=F}
+df %>% 
+  group_by(ym) %>% 
+  summarise(count = n(),
+            base_rate = base.rate,
+            mean_price = mean(Price.10000.won)) %>% 
+  unique() %>% 
+  ggplot(aes(x = ym, y = mean_price - 30000, fill = ym,group = 1))+
+  geom_col()+
+  theme_bw()+
+  theme(legend.position = 'none')+
+  labs(x='Month',y='Mean Price by month - 30,000',title='Mean price of real estate transactions by Month')+
+  theme(axis.text.x = element_text(angle= 90, vjust = 0.5,size =6))
+  
+```
+The graph above shows the average price over time. No particular pattern can be found in this graph. But in our data, it is the base rate that changes over time. Let's look at the graph above by adding information on the base interest rate.
+
+
+### Mean price of real estate transactions by Month and Base rate line
+```{r,message=F}
+df %>% 
+  group_by(ym) %>% 
+  summarise(count = n(),
+            base_rate = base.rate,
+            mean_price = mean(Price.10000.won)) %>% 
+  unique() %>% 
+  ggplot(aes(x = ym, y = mean_price - 30000, fill = ym,group = 1))+
+  geom_col()+
+  theme_bw()+
+  theme(legend.position = 'none')+
+  labs(x='Month',y='Mean Price by month - 30,000',title='Mean price of real estate transactions by Month and Base rate line')+
+  theme(axis.text.x = element_text(angle= 90, vjust = 0.5,size =6))+
+  geom_point(aes(y = base_rate / 0.0001), shape = 21, size=1, fill='blue', colour='blue')+
+  geom_line(mapping = aes(x= ym, y = base_rate / 0.0001)) +
+  scale_y_continuous(sec.axis = sec_axis(~./10000, name = "Base Rate"))
+  
+```
+In this case, the lower the base interest rate, the higher the price. Through this, it was judged that the base rate would be an important variable in predicting the transaction price.
+
+
+
+# Modeling
+
+Based on the previous EDA process, we wanted to create a linear regression model which predict price through year, Gwon, building area, building purpose and base rate. Therefore, we separated the data into only the necessary variables.
+
+```{r}
+
+df <- df %>% select(Year, Gwon, Price.10000.won, Building.Area, Building.Purpose, base.rate)
+
+df$Price.10000.won <- df$Price.10000.won * 10000
+names(df)[3] <- "Price"
+```
+
+## Improvement:
+Linear regression assumes normality of the data. However, if you look at the graph below, the price distribution of the data does not satisfy normality at all. Log transformation is a way to solve this problem. Comparing the two plots below, the log transformation is not perfect, but it can be seen that the distribution is somewhat normal. Therefore, the analysis was carried out by log-transforming the price.
+```{r,warning=F}
+library(ggpubr)
+par(mfrow =c(1,2))
+p1 <- ggdensity(df$Price,
+          add = "mean",
+          color = 'red',
+          title = 'Density plot of Price',
+          xlab = 'Price')
+p2 <- ggdensity(log(df$Price),
+          add = "mean",
+          color = 'blue',
+          title = 'Density plot of log Price',
+          xlab = 'log Price')
+library(gridExtra)
+grid.arrange(p1,p2,ncol=2)
+```
+
+### Training & Test Set Split
+
+We separated the data into a training set and a test set to check how well the model predicts with the test set.
+```{r}
+set.seed(18)
+
+n_row <- round(dim(df)[1]*0.7)
+
+train_idx <- sample(1:dim(df)[1],n_row,replace = F)
+
+df_train <- df[train_idx,]
+df_test <- df[-train_idx,]
+```
+
+### First Model : log(price) ~ all.
+```{r}
+model1 <- lm(log(Price) ~ .,data = df_train)
+
+summary(model1)
+```
+When the price was used as the dependent variable and the rest of the variables were used as explanatory variables, the results confirmed that all variables were significant, and the Adjusted R-squared at this time was 0.6407.
+However, we suspected that the Year variable was categorical rather than continuous numerical data, and the results of the modeling were as follows.
+
+### Second Model: Change Neumeric Year to Categorical Year
+```{r}
+model2 <- lm(log(Price) ~ as.factor(Year)+Gwon+Building.Area+Building.Purpose+base.rate, data = df_train)
+summary(model2)
+```
+In this case, the adjusted R squared value a little increased, but the result was that the Year variable as a factor was not significant.
+Therefore, we tried to proceed with the variable selection method, and this time, stepwise was applied.
+
+```{r}
+step(lm(log(Price) ~ as.factor(Year)+Gwon+Building.Area+Building.Purpose+base.rate, data = df_train),scope = list(lower = ~1, upper = ~.),direction = 'both')
+```
+
+As a result of variable selection, it can be confirmed that all variables are selected. We also tried to consider the interaction term case, thus we added Building.Area multiplied by base.rate variable as a new independent variable.
+
+### Third Model: Adding Interaction Term.
+```{r}
+model3 <- lm(log(Price) ~ as.factor(Year)+Gwon+Building.Area+Building.Purpose+base.rate+Building.Area * base.rate , data = df_train)
+summary(model3)
+```
+In this case, the adjusted R squared value is same as the previous one. Again, we did variable selection.
+
+
+```{r}
+step(lm(Price ~ as.factor(Year)+Gwon+Building.Area+Building.Purpose+base.rate+Building.Area * base.rate , data = df_train),scope = list(lower = ~1, upper = ~.),direction = 'both')
+```
+
+All variables were selected in this case as well.
+
+In this case, the problem of multicollinearity may arise due to the interaction term.
+After checking the multicollinearity problem, we selected the final model.
+
+
+### Multicollinearity Check
+
+To check multicollinearity, correlation coefficients between explanatory variables should be checked. In our case, since both categorical and numeric variables exist, we will find Pearson's correlation coefficient between numeric variables, polyserial correlation between numerical and categorical variables, and Cramer's V between categorical and categorical variables.
+Based on the correlation coefficients obtained between the variables, we created a matrix and visualized it.
+
+
+#### numeric vs numeric
+
+```{r}
+num_df <- df %>% select(Building.Area, base.rate) %>% 
+  mutate(intersection = Building.Area * base.rate)
+
+num_cor <- round(cor(num_df),2)
+```
+
+#### numeric vs categorical
+
+```{r}
+library(polycor)
+round(polyserial(df$Building.Area, df$Year, ML = FALSE, control = list(), 
+  std.err = FALSE, maxcor=.9999, bins=4, start, thresholds=FALSE),2)
+```
+
+```{r}
+round(polyserial(df$Building.Area, df$Gwon, ML = FALSE, control = list(), 
+  std.err = FALSE, maxcor=.9999, bins=4, start, thresholds=FALSE),2)
+```
+
+```{r}
+round(polyserial(df$Building.Area, df$Building.Purpose, ML = FALSE, control = list(), 
+  std.err = FALSE, maxcor=.9999, bins=4, start, thresholds=FALSE),2)
+```
+
+```{r}
+round(polyserial(df$base.rate, df$Year, ML = FALSE, control = list(), 
+  std.err = FALSE, maxcor=.9999, bins=4, start, thresholds=FALSE),2)
+```
+
+```{r}
+round(polyserial(df$base.rate, df$Gwon, ML = FALSE, control = list(), 
+  std.err = FALSE, maxcor=.9999, bins=4, start, thresholds=FALSE),2)
+```
+
+```{r}
+round(polyserial(df$base.rate, df$Building.Purpose, ML = FALSE, control = list(), 
+  std.err = FALSE, maxcor=.9999, bins=4, start, thresholds=FALSE),2)
+```
+```{r}
+round(polyserial(df$Building.Area * df$base.rate, df$Building.Purpose, ML = FALSE, control = list(), 
+  std.err = FALSE, maxcor=.9999, bins=4, start, thresholds=FALSE),2)
+```
+
+```{r}
+round(polyserial(df$Building.Area * df$base.rate, df$Gwon, ML = FALSE, control = list(), 
+  std.err = FALSE, maxcor=.9999, bins=4, start, thresholds=FALSE),2)
+```
+
+```{r}
+round(polyserial(df$Building.Area * df$base.rate, df$Year, ML = FALSE, control = list(), 
+  std.err = FALSE, maxcor=.9999, bins=4, start, thresholds=FALSE),2)
+```
+
+### Categorical vs Categorical
+
+```{r}
+library(DescTools)
+round(CramerV(df$Gwon, df$Building.Purpose),2)
+```
+
+```{r}
+round(CramerV(df$Year, df$Building.Purpose),2)
+```
+
+```{r}
+round(CramerV(df$Year, df$Gwon),2)
+```
+
+The matrix combining the correlation coefficient values is as follows.
+
+```{r}
+Building.area <- c(1.00,0.02,0.84,-0.01,-0.03,-0.08)
+Bare.rate <- c(0.02,1.00,0.41,-0.02,0,-0.56)
+inter <- c(0.84,0.41,1.00,-0.02,-0.03,-0.3)
+Building.purpose <- c(-0.01,-0.02,-0.02,1.00,0.12,0.13)
+Gwon <- c(-0.03,0,-0.03,0.12,1,0.03)
+Year <- c(-0.08,-0.56,-0.3,0.13,0.03,1.00)
+
+cor <- as.matrix(cbind(Building.area,Bare.rate,inter,Building.purpose,Gwon,Year))
+rownames(cor) <- c("Building.area","Bare.rate" ,"inter" ,"Building.purpose" ,"Gwon" ,"Year")
+```
+
+# Heatmap of Explanatory Variables
+```{r}
+library(ggcorrplot)
+ggcorrplot(cor,hc.order = TRUE,
+   lab = TRUE,title="Correlation Heatmap of explanatory Variables", legend.title = "Correalation")
+```
+
+The correlation coefficient between the interaction term and the building area was shown to be high.
+Even if the interaction term originates from the building area, there may be a problem of multicollinearity because the value of the correlation coefficient is too large, and it is judged to be an unnecessary variable.
+Therefore, Model 2 was selected as the best model instead of Model 3.
+
+
+## Improvement: Confirmation of that the numerical meaning is lost when Year is factorized
+After changing the years into character types, factoring them into the model results in the same results as model 2 above.
+Therefore, as a result of factorizing year variable, year is no longer a continuous nuemeric variable, but a categorical variable with 6 categories.
+```{r}
+temp <- df_train
+temp$Year <- ifelse(temp$Year == 2017, "2017",
+                    ifelse(temp$Year == 2018, "2018",
+                           ifelse(temp$Year == 2019, "2019",
+                                  ifelse(temp$Year == 2020,"2020",
+                                  ifelse(temp$Year == 2021,"2021","2022")))))
+
+temp_model <- lm(log(Price) ~ Year+Gwon+Building.Area+Building.Purpose+base.rate, data = temp)
+summary(temp_model)
+```
+
+
+### Calculatation of Accuracy and Error Rates
+Now, let's check how well the model is trained by comparing the actual and predicted values of the test set.
+```{r}
+# Training data
+pred1 <- predict(model2, df_train)
+actual_pred_tr <- data.frame(cbind(actual= log(df_train$Price), predicted = pred1))
+
+train_correlation_accuracy <- cor(actual_pred_tr)
+train_correlation_accuracy
+```
+The predicted value of the model appears to have a correlation of about 0.80 with the actual value of the train data.
+
+```{r}
+# Test data accuracy
+pred2 <- predict(model2, df_test %>% select(-Price)) # test on test set
+
+actual_pred_te <- data.frame(cbind(actual=log(df_test$Price), predicted = pred2))
+test_corr_acc <- cor(actual_pred_te)
+test_corr_acc
+```
+The predicted value of the model appears to have a correlation of about 0.8 with the actual value of the test data.
+
+
+```{r}
+# Approximate distribution of test data and predicted values
+summary(exp(pred2));summary(df_test$Price)
+
+```
+When returning the value predicted by log, you can see that it is similar to the price value of the actual test data.
+
+
+### Evaluation indicators of the model confirmed through the forecast library
+```{r,message=F}
+library(forecast)
+accuracy(model2)
+
+#RMSE 
+sqrt(sum((model2$residuals)^2)/nrow(df_train))
+```
+The RMSE value was shown to be about 0.48.
+
+
+
+## Conclusions:
+Through analysis, it was figured out that the price of real estates in Seoul is influenced by various variables, especially base rate and building area. Furthermore, by considering interaction term and multicollinearity by correlation coefficients, it was possible to do in-depth evaluation to select the best one among three models. Ultimately, the best model could predict the price of real estates with high similarity to actual values.
+In regards of limitations, there was a problem in prediction in which the model returned the predicted price as negative quantity. There were about 100 negative quantities among 450,000 values, and it was because there were not enough exogenous variables such as LTV(Loan-to-Value) or DTI(Debt-to-Income) except for base rate. Secondly, when the predicted value in log form is returned to its original form, there are cases where the Max value becomes much larger than the actual value. This is a phenomenon caused by not handling outliers well. Last point in the limitations is that precise analysis would have been possible if we proceeded with more specified house location data such as “Dong” because the price of real estate tends to be strongly influenced by specifically where it is located.
+Above all these significances and limitations, it was a precious experience to try to predict the price of real estate by data analysis, trying to overcome the fluctuation of real estate market.
+
